@@ -1,4 +1,4 @@
-name: GEMINI-V2RAY-200
+name: GEMINI-V2RAY-20
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 60
 
     steps:
 
@@ -27,10 +27,10 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq curl parallel unzip
+          sudo apt-get install -y jq curl unzip
 
       # =========================================================
-      # Download Xray
+      # Install Xray
       # =========================================================
       - name: Install Xray
         run: |
@@ -41,6 +41,7 @@ jobs:
             -o xray.zip
 
           unzip -q xray.zip -d xray
+
           chmod +x xray/xray
 
           ./xray/xray version
@@ -56,16 +57,18 @@ jobs:
 
           sed -i '/^[[:space:]]*$/d' all.txt
 
-          echo "Total:"
+          echo "Total source configurations:"
           wc -l all.txt
 
       # =========================================================
       # Filter candidates
       #
-      # Maximum 800 candidates will be tested.
+      # We only need 20 final servers.
+      # Test up to 300 good candidates.
       # =========================================================
       - name: Filter candidates
         run: |
+
           > candidates.txt
 
           while IFS= read -r line; do
@@ -80,32 +83,49 @@ jobs:
 
             score=0
 
+            # ---------------------------------------------------
             # Port 443
-            if echo "$line" | grep -qiE '(:443([/?#]|$)|port=443|%3A443)'; then
+            # ---------------------------------------------------
+            if echo "$line" | grep -qiE \
+              '(:443([/?#]|$)|port=443|%3A443)'; then
               score=$((score + 50))
             fi
 
+            # ---------------------------------------------------
             # TLS
-            if echo "$line" | grep -qiE 'security=tls|security=reality|tlsSettings|tls'; then
+            # ---------------------------------------------------
+            if echo "$line" | grep -qiE \
+              'security=tls|security=reality|tlsSettings|tls'; then
               score=$((score + 30))
             fi
 
+            # ---------------------------------------------------
             # Reality
-            if echo "$line" | grep -qiE 'reality|pbk=|publickey='; then
+            # ---------------------------------------------------
+            if echo "$line" | grep -qiE \
+              'reality|pbk=|publickey='; then
               score=$((score + 20))
             fi
 
+            # ---------------------------------------------------
             # WebSocket
-            if echo "$line" | grep -qiE 'type=ws|network=ws|websocket|wsSettings'; then
+            # ---------------------------------------------------
+            if echo "$line" | grep -qiE \
+              'type=ws|network=ws|websocket|wsSettings'; then
               score=$((score + 10))
             fi
 
+            # ---------------------------------------------------
             # gRPC
-            if echo "$line" | grep -qiE 'type=grpc|network=grpc|grpc'; then
+            # ---------------------------------------------------
+            if echo "$line" | grep -qiE \
+              'type=grpc|network=grpc|grpc'; then
               score=$((score + 10))
             fi
 
-            # Only reasonably good candidates
+            # ---------------------------------------------------
+            # Candidate
+            # ---------------------------------------------------
             if [ "$score" -ge 50 ]; then
               echo "$score|$line" >> candidates.txt
             fi
@@ -113,26 +133,29 @@ jobs:
           done < all.txt
 
           sort -t'|' -k1,1nr candidates.txt \
-            | head -n 800 \
-            > candidates_800.txt
+            | head -n 300 \
+            > candidates_300.txt
 
-          echo "Candidates:"
-          wc -l candidates_800.txt
+          echo "Candidates selected for testing:"
+          wc -l candidates_300.txt
 
       # =========================================================
-      # Python converter
-      #
-      # Converts VLESS / VMess / Trojan URI to Xray config.
+      # Create Xray configuration parser
       # =========================================================
       - name: Create parser
         run: |
+
           cat > make_config.py <<'PY'
           import sys
           import json
           import base64
           import urllib.parse
 
+          if len(sys.argv) < 3:
+              sys.exit(1)
+
           uri = sys.argv[1]
+          local_port = int(sys.argv[2])
 
           def b64decode(s):
               s = s.strip()
@@ -160,12 +183,16 @@ jobs:
               path = data.get("path", "")
               sni = data.get("sni", host)
 
+              if not address or not uuid:
+                  sys.exit(1)
+
               stream = {
                   "network": network,
                   "security": "tls" if tls else "none"
               }
 
               if network == "ws":
+
                   stream["wsSettings"] = {
                       "path": path or "/"
                   }
@@ -176,6 +203,7 @@ jobs:
                       }
 
               if tls:
+
                   stream["tlsSettings"] = {
                       "serverName": sni or address,
                       "allowInsecure": False,
@@ -189,8 +217,9 @@ jobs:
 
                   "inbounds": [{
                       "listen": "127.0.0.1",
-                      "port": 10808,
+                      "port": local_port,
                       "protocol": "socks",
+
                       "settings": {
                           "udp": False
                       }
@@ -203,6 +232,7 @@ jobs:
                           "vnext": [{
                               "address": address,
                               "port": port,
+
                               "users": [{
                                   "id": uuid,
                                   "alterId": int(data.get("aid", 0)),
@@ -220,16 +250,30 @@ jobs:
           # =====================================================
           elif uri.startswith("vless://"):
 
-              p = urllib.parse.urlparse(uri)
+              try:
+                  p = urllib.parse.urlparse(uri)
 
-              uuid = p.username
-              address = p.hostname
-              port = p.port or 443
+                  uuid = p.username
+                  address = p.hostname
+                  port = p.port or 443
 
-              q = urllib.parse.parse_qs(p.query)
+                  q = urllib.parse.parse_qs(p.query)
 
-              network = q.get("type", ["tcp"])[0]
-              security = q.get("security", ["none"])[0]
+              except Exception:
+                  sys.exit(1)
+
+              if not uuid or not address:
+                  sys.exit(1)
+
+              network = q.get(
+                  "type",
+                  ["tcp"]
+              )[0]
+
+              security = q.get(
+                  "security",
+                  ["none"]
+              )[0]
 
               stream = {
                   "network": network,
@@ -241,12 +285,18 @@ jobs:
               # -------------------------------------------------
               if security == "tls":
 
-                  sni = q.get("sni", [address])[0]
+                  sni = q.get(
+                      "sni",
+                      [address]
+                  )[0]
 
                   stream["tlsSettings"] = {
                       "serverName": sni,
                       "allowInsecure": False,
-                      "fingerprint": "chrome"
+                      "fingerprint": q.get(
+                          "fp",
+                          ["chrome"]
+                      )[0]
                   }
 
               # -------------------------------------------------
@@ -254,9 +304,23 @@ jobs:
               # -------------------------------------------------
               elif security == "reality":
 
-                  sni = q.get("sni", [""])[0]
-                  pbk = q.get("pbk", [""])[0]
-                  sid = q.get("sid", [""])[0]
+                  sni = q.get(
+                      "sni",
+                      [""]
+                  )[0]
+
+                  pbk = q.get(
+                      "pbk",
+                      [""]
+                  )[0]
+
+                  sid = q.get(
+                      "sid",
+                      [""]
+                  )[0]
+
+                  if not pbk or not sni:
+                      sys.exit(1)
 
                   stream["realitySettings"] = {
                       "fingerprint": q.get(
@@ -265,7 +329,9 @@ jobs:
                       )[0],
 
                       "serverName": sni,
+
                       "publicKey": pbk,
+
                       "shortId": sid,
 
                       "spiderX": q.get(
@@ -292,6 +358,7 @@ jobs:
                   )[0]
 
                   if host:
+
                       stream["wsSettings"]["headers"] = {
                           "Host": host
                       }
@@ -308,15 +375,15 @@ jobs:
                       )[0]
                   }
 
-              flow = q.get(
-                  "flow",
-                  [""]
-              )[0]
-
               user = {
                   "id": uuid,
                   "encryption": "none"
               }
+
+              flow = q.get(
+                  "flow",
+                  [""]
+              )[0]
 
               if flow:
                   user["flow"] = flow
@@ -328,8 +395,9 @@ jobs:
 
                   "inbounds": [{
                       "listen": "127.0.0.1",
-                      "port": 10808,
+                      "port": local_port,
                       "protocol": "socks",
+
                       "settings": {
                           "udp": False
                       }
@@ -355,38 +423,68 @@ jobs:
           # =====================================================
           elif uri.startswith("trojan://"):
 
-              p = urllib.parse.urlparse(uri)
+              try:
+                  p = urllib.parse.urlparse(uri)
 
-              password = urllib.parse.unquote(
-                  p.username or ""
-              )
+                  password = urllib.parse.unquote(
+                      p.username or ""
+                  )
 
-              address = p.hostname
-              port = p.port or 443
+                  address = p.hostname
+                  port = p.port or 443
 
-              q = urllib.parse.parse_qs(
-                  p.query
-              )
+                  q = urllib.parse.parse_qs(
+                      p.query
+                  )
+
+              except Exception:
+                  sys.exit(1)
+
+              if not address or not password:
+                  sys.exit(1)
 
               sni = q.get(
                   "sni",
                   [address]
               )[0]
 
-              stream = {
-                  "network": q.get(
-                      "type",
-                      ["tcp"]
-                  )[0],
+              network = q.get(
+                  "type",
+                  ["tcp"]
+              )[0]
 
+              stream = {
+                  "network": network,
                   "security": "tls",
 
                   "tlsSettings": {
                       "serverName": sni,
                       "allowInsecure": False,
-                      "fingerprint": "chrome"
+                      "fingerprint": q.get(
+                          "fp",
+                          ["chrome"]
+                      )[0]
                   }
               }
+
+              if network == "ws":
+
+                  stream["wsSettings"] = {
+                      "path": q.get(
+                          "path",
+                          ["/"]
+                      )[0]
+                  }
+
+                  host = q.get(
+                      "host",
+                      [""]
+                  )[0]
+
+                  if host:
+                      stream["wsSettings"]["headers"] = {
+                          "Host": host
+                      }
 
               config = {
                   "log": {
@@ -395,8 +493,9 @@ jobs:
 
                   "inbounds": [{
                       "listen": "127.0.0.1",
-                      "port": 10808,
+                      "port": local_port,
                       "protocol": "socks",
+
                       "settings": {
                           "udp": False
                       }
@@ -429,41 +528,67 @@ jobs:
           PY
 
       # =========================================================
-      # Test one configuration
+      # Create tester
+      #
+      # Every test receives its own SOCKS port.
       # =========================================================
       - name: Create tester
         run: |
+
           cat > test_one.sh <<'SH'
           #!/bin/bash
 
+          set +e
+
           input="$1"
           id="$2"
+
+          # Every Xray gets a unique local port.
+          PORT=$((20000 + id))
 
           score=$(echo "$input" | cut -d'|' -f1)
           uri=$(echo "$input" | cut -d'|' -f2-)
 
           mkdir -p test_configs
 
-          # -----------------------------------------------------
-          # Convert URI to Xray configuration
-          # -----------------------------------------------------
-          python3 make_config.py "$uri" \
-            > "test_configs/$id.json" 2>/dev/null
+          config="test_configs/${id}.json"
+          logfile="test_configs/${id}.log"
 
-          if [ ! -s "test_configs/$id.json" ]; then
+          cleanup() {
+
+            if [ -n "$pid" ]; then
+              kill "$pid" 2>/dev/null
+              wait "$pid" 2>/dev/null
+            fi
+
+            rm -f "$config"
+            rm -f "$logfile"
+            rm -f "test_configs/${id}.code"
+          }
+
+          trap cleanup EXIT
+
+          # -----------------------------------------------------
+          # Create config
+          # -----------------------------------------------------
+          python3 make_config.py \
+            "$uri" \
+            "$PORT" \
+            > "$config" 2>/dev/null
+
+          if [ ! -s "$config" ]; then
             exit 1
           fi
 
           # -----------------------------------------------------
-          # Validate Xray configuration
+          # Validate config
           # -----------------------------------------------------
           ./xray/xray run \
             -test \
-            -config "test_configs/$id.json" \
+            -config "$config" \
             >/dev/null 2>&1
 
           if [ $? -ne 0 ]; then
-            rm -f "test_configs/$id.json"
             exit 1
           fi
 
@@ -471,64 +596,26 @@ jobs:
           # Start Xray
           # -----------------------------------------------------
           ./xray/xray run \
-            -config "test_configs/$id.json" \
-            > "test_configs/$id.log" 2>&1 &
+            -config "$config" \
+            > "$logfile" 2>&1 &
 
           pid=$!
 
           # -----------------------------------------------------
-          # Give Xray time to start
+          # Wait for SOCKS port
           # -----------------------------------------------------
-          sleep 1
-
-          # -----------------------------------------------------
-          # Test HTTPS connectivity
-          # -----------------------------------------------------
-          for i in {1..5}; do
+          for n in 1 2 3 4 5; do
 
             if curl \
-              --socks5-hostname 127.0.0.1:10808 \
-              --connect-timeout 2 \
-              --max-time 4 \
+              --socks5-hostname "127.0.0.1:${PORT}" \
+              --connect-timeout 1 \
+              --max-time 2 \
               -o /dev/null \
               -s \
-              https://generativelanguage.googleapis.com/ \
-              -w "%{http_code}" \
-              > "test_configs/$id.code" \
-              2>/dev/null
+              https://www.google.com/ \
+              >/dev/null 2>&1
             then
-
-              code=$(cat "test_configs/$id.code")
-
-              # Any HTTP response except 000 means
-              # the connection reached the server.
-              if [ "$code" != "000" ] && [ -n "$code" ]; then
-
-                # -------------------------------------------------
-                # Measure latency
-                # -------------------------------------------------
-                latency=$(curl \
-                  --socks5-hostname 127.0.0.1:10808 \
-                  --connect-timeout 3 \
-                  --max-time 6 \
-                  -o /dev/null \
-                  -s \
-                  -w "%{time_total}" \
-                  https://generativelanguage.googleapis.com/ \
-                  2>/dev/null || echo "99")
-
-                echo "$score|$latency|$code|$uri"
-
-                kill "$pid" 2>/dev/null
-                wait "$pid" 2>/dev/null
-
-                rm -f "test_configs/$id.json"
-                rm -f "test_configs/$id.log"
-                rm -f "test_configs/$id.code"
-
-                exit 0
-              fi
-
+              break
             fi
 
             sleep 1
@@ -536,14 +623,47 @@ jobs:
           done
 
           # -----------------------------------------------------
-          # Failed configuration
+          # Gemini connectivity test
           # -----------------------------------------------------
-          kill "$pid" 2>/dev/null
-          wait "$pid" 2>/dev/null
+          for attempt in 1 2 3; do
 
-          rm -f "test_configs/$id.json"
-          rm -f "test_configs/$id.log"
-          rm -f "test_configs/$id.code"
+            code=$(curl \
+              --socks5-hostname "127.0.0.1:${PORT}" \
+              --connect-timeout 2 \
+              --max-time 5 \
+              -o /dev/null \
+              -s \
+              -w "%{http_code}" \
+              https://generativelanguage.googleapis.com/ \
+              2>/dev/null)
+
+            if [ "$code" != "000" ] && [ -n "$code" ]; then
+
+              # -------------------------------------------------
+              # Measure latency
+              # -------------------------------------------------
+              latency=$(curl \
+                --socks5-hostname "127.0.0.1:${PORT}" \
+                --connect-timeout 2 \
+                --max-time 5 \
+                -o /dev/null \
+                -s \
+                -w "%{time_total}" \
+                https://generativelanguage.googleapis.com/ \
+                2>/dev/null)
+
+              if [ -z "$latency" ]; then
+                latency="99"
+              fi
+
+              echo "$score|$latency|$code|$uri"
+
+              exit 0
+            fi
+
+            sleep 1
+
+          done
 
           exit 1
           SH
@@ -553,158 +673,54 @@ jobs:
       # =========================================================
       # Test candidates
       #
-      # Maximum 800 candidates.
-      # 20 Xray instances are tested concurrently.
+      # Maximum:
+      #   300 candidates
+      #   10 simultaneous Xray instances
+      #
+      # Only successful Gemini routes are collected.
       # =========================================================
       - name: Test Gemini connectivity
         run: |
+
           mkdir -p results
           rm -f results/*.txt
 
-          split -l 1 candidates_800.txt test_input_
+          if [ ! -s candidates_300.txt ]; then
 
-          counter=0
+            echo "No candidates found."
 
-          for file in test_input_*; do
+            touch tested.txt
 
-            counter=$((counter + 1))
+          else
 
-            (
-              ./test_one.sh \
-                "$(cat "$file")" \
-                "$counter"
-            ) >> "results/$counter.txt" 2>/dev/null &
+            split -l 1 candidates_300.txt test_input_
 
-            # Keep approximately 20 Xray instances
-            # running at the same time.
-            if (( counter % 20 == 0 )); then
-              wait
-            fi
+            counter=0
+            running=0
 
-          done
+            for file in test_input_*; do
 
-          wait
+              [ -f "$file" ] || continue
 
-          cat results/*.txt 2>/dev/null \
-            | sed '/^[[:space:]]*$/d' \
-            > tested.txt || true
+              counter=$((counter + 1))
+              running=$((running + 1))
 
-          echo "Successful Gemini routes:"
-          wc -l tested.txt
+              (
+                ./test_one.sh \
+                  "$(cat "$file")" \
+                  "$counter"
+              ) > "results/$counter.txt" 2>/dev/null &
 
-          rm -f test_input_*
-
-      # =========================================================
-      # Country detection
-      # =========================================================
-      - name: Detect countries
-        run: |
-          > country_map.txt
-
-          grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' tested.txt \
-            | sort -u > ips.txt || true
-
-          if [ -s ips.txt ]; then
-
-            split -l 100 ips.txt ip_chunk_
-
-            for chunk in ip_chunk_*; do
-
-              json=$(jq -R . < "$chunk" | jq -s .)
-
-              response=$(curl -s \
-                -X POST \
-                "http://ip-api.com/batch" \
-                -H "Content-Type: application/json" \
-                -d "$json")
-
-              echo "$response" |
-                jq -r '.[] |
-                  "\(.query)|\(.country // "Unknown")"' \
-                >> country_map.txt
+              # -------------------------------------------------
+              # Maximum 10 simultaneous tests
+              # -------------------------------------------------
+              if (( running >= 10 )); then
+                wait || true
+                running=0
+              fi
 
             done
 
-          fi
+            wait || true
 
-          rm -f ip_chunk_*
-          rm -f ips.txt
-
-      # =========================================================
-      # Select best 200
-      #
-      # Priority:
-      # 1. Higher protocol score
-      # 2. Lower latency
-      # =========================================================
-      - name: Select best 200
-        run: |
-
-          > selected.txt
-
-          while IFS='|' read -r score latency code uri; do
-
-            ip=$(echo "$uri" |
-              grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' |
-              head -1)
-
-            country="Unknown"
-
-            if [ -n "$ip" ]; then
-
-              country=$(grep "^$ip|" country_map.txt |
-                cut -d'|' -f2 |
-                head -1)
-
-            fi
-
-            [ -z "$country" ] && country="Unknown"
-
-            echo "$score|$latency|$country|$uri"
-
-          done < tested.txt \
-            | sort -t'|' -k1,1nr -k2,2n \
-            | head -n 200 \
-            > selected.txt
-
-          echo "FINAL:"
-          wc -l selected.txt
-
-      # =========================================================
-      # Build SUBTEXT2
-      # =========================================================
-      - name: Build SUBTEXT2
-        run: |
-
-          > SUBTEXT2
-
-          while IFS='|' read -r score latency country uri; do
-
-            [ -z "$uri" ] && continue
-
-            latency_ms=$(awk \
-              -v x="$latency" \
-              'BEGIN { printf "%.0f", x*1000 }')
-
-            label="${country} | GEMINI-OK | ${latency_ms}ms"
-
-            # Remove old fragment
-            if [[ "$uri" == *"#"* ]]; then
-              uri=$(echo "$uri" |
-                sed 's/#[^#]*$//')
-            fi
-
-            echo "${uri}#${label}" >> SUBTEXT2
-
-          done < selected.txt
-
-          echo
-          echo "================================"
-          echo "GEMINI SUBSCRIPTION"
-          echo "================================"
-
-          echo "Configs:"
-          wc -l SUBTEXT2
-
-          echo
-          echo "Fir
+            cat results/*.txt 2
