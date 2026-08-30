@@ -1,4 +1,4 @@
-name: Countries
+name: Netherlands-Turkey
 
 on:
   workflow_dispatch:
@@ -13,104 +13,168 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
+        run: sudo apt-get update -y && sudo apt-get install -y jq
 
-      - name: Download configs
+      - name: Download subscription
         run: |
-          curl -fL --retry 3 \
-            "https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/All_Configs_Sub.txt" \
-            -o all.txt
-
-          echo "Total lines:"
-          wc -l < all.txt
-
-      - name: Extract IPs
-        run: |
-          grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' all.txt |
-          sort -u > ips.txt || true
-
-          echo "Unique IPs:"
-          wc -l < ips.txt
+          curl -fL "https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/All_Configs_Sub.txt" -o all.txt
+          echo "📥 تعداد کل: $(wc -l < all.txt)"
 
       - name: Detect countries
         run: |
-          rm -f countries.txt
-          touch countries.txt
+          set +e
 
-          split -l 100 ips.txt part_
+          grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' all.txt | sort -u > unique_ips.txt
 
-          for part in part_*; do
-            [ -f "$part" ] || continue
+          echo "🌐 تعداد IP یکتا: $(wc -l < unique_ips.txt)"
 
-            echo "Checking $(wc -l < "$part") IPs..."
+          > country_map.txt
 
-            jq -R -s '
-              split("\n")
-              | map(select(length > 0))
-              | map({query: .})
-            ' "$part" > request.json
+          if [ -s unique_ips.txt ]; then
 
-            curl -s \
-              --max-time 60 \
-              -X POST \
-              "http://ip-api.com/batch" \
-              -H "Content-Type: application/json" \
-              --data-binary @request.json |
-            jq -r '
-              .[]
-              | select(.status == "success")
-              | "\(.query)|\(.country)"
-            ' >> countries.txt || true
+            split -l 100 unique_ips.txt chunk_
 
-            sleep 5
-          done
+            for chunk in chunk_*; do
 
-          echo "Country results:"
-          wc -l < countries.txt
+              json=$(jq -R . < "$chunk" | jq -s . 2>/dev/null || echo '[]')
 
-      - name: Create Netherlands
-        run: |
+              response=$(curl -s \
+                -X POST \
+                "http://ip-api.com/batch" \
+                -H "Content-Type: application/json" \
+                -d "$json")
+
+              if echo "$response" | jq -e . >/dev/null 2>&1; then
+
+                echo "$response" |
+                  jq -r '.[] | "\(.query)|\(.country // "Unknown")"' \
+                  >> country_map.txt
+
+              else
+
+                while read ip; do
+                  echo "$ip|Unknown"
+                done < "$chunk" >> country_map.txt
+
+              fi
+
+              sleep 5
+
+            done
+
+            rm -f chunk_*
+
+          fi
+
           > Netherlands
-
-          while IFS= read -r line; do
-            ip=$(echo "$line" |
-              grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' |
-              head -1 || true)
-
-            [ -z "$ip" ] && continue
-
-            if grep -Fqx "$ip|Netherlands" countries.txt; then
-              echo "$line" >> Netherlands
-            fi
-          done < all.txt
-
-          echo "Netherlands configs:"
-          wc -l < Netherlands
-
-      - name: Create Turkey
-        run: |
           > Turkey
 
+          nl=1
+          tr=1
+
           while IFS= read -r line; do
+
+            [ -z "$line" ] && continue
+
             ip=$(echo "$line" |
               grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' |
-              head -1 || true)
+              head -1)
 
-            [ -z "$ip" ] && continue
+            country="Unknown"
 
-            if grep -Fqx "$ip|Turkey" countries.txt; then
-              echo "$line" >> Turkey
+            if [ -n "$ip" ]; then
+              country=$(grep "^$ip|" country_map.txt |
+                cut -d'|' -f2 |
+                head -1)
+
+              [ -z "$country" ] && country="Unknown"
             fi
+
+            # VMESS
+            if [[ "$line" == vmess://* ]]; then
+
+              encoded=$(echo "$line" | sed 's/vmess:\/\///')
+
+              decoded=$(echo "$encoded" |
+                base64 -d 2>/dev/null || echo '')
+
+              if [ -n "$decoded" ] &&
+                 echo "$decoded" | jq -e . >/dev/null 2>&1; then
+
+                if [ "$country" = "Netherlands" ]; then
+                  new_decoded=$(echo "$decoded" |
+                    jq --arg name "Netherlands $nl" '.ps = $name')
+
+                  new_encoded=$(echo "$new_decoded" |
+                    base64 -w 0)
+
+                  echo "vmess://$new_encoded" >> Netherlands
+
+                  nl=$((nl + 1))
+                fi
+
+                if [ "$country" = "Turkey" ]; then
+                  new_decoded=$(echo "$decoded" |
+                    jq --arg name "Turkey $tr" '.ps = $name')
+
+                  new_encoded=$(echo "$new_decoded" |
+                    base64 -w 0)
+
+                  echo "vmess://$new_encoded" >> Turkey
+
+                  tr=$((tr + 1))
+                fi
+
+              else
+
+                if [ "$country" = "Netherlands" ]; then
+                  echo "${line%%#*}#Netherlands $nl" >> Netherlands
+                  nl=$((nl + 1))
+                fi
+
+                if [ "$country" = "Turkey" ]; then
+                  echo "${line%%#*}#Turkey $tr" >> Turkey
+                  tr=$((tr + 1))
+                fi
+
+              fi
+
+            else
+
+              if [ "$country" = "Netherlands" ]; then
+                echo "${line%%#*}#Netherlands $nl" >> Netherlands
+                nl=$((nl + 1))
+              fi
+
+              if [ "$country" = "Turkey" ]; then
+                echo "${line%%#*}#Turkey $tr" >> Turkey
+                tr=$((tr + 1))
+              fi
+
+            fi
+
           done < all.txt
 
-          echo "Turkey configs:"
-          wc -l < Turkey
+          echo ""
+          echo "🇳🇱 Netherlands: $(wc -l < Netherlands)"
+          echo "🇹🇷 Turkey: $(wc -l < Turkey)"
 
-      - name: Save
+          echo ""
+          echo "نمونه Netherlands:"
+          head -n 3 Netherlands
+
+          echo ""
+          echo "نمونه Turkey:"
+          head -n 3 Turkey
+
+          rm -f unique_ips.txt country_map.txt
+
+      - name: Commit and push
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
@@ -118,17 +182,9 @@ jobs:
           git add Netherlands Turkey
 
           if git diff --cached --quiet; then
-            echo "No changes"
-          else
-            git commit -m "Update Netherlands and Turkey"
-            git push
+            echo "✅ بدون تغییر"
+            exit 0
           fi
 
-      - name: Cleanup
-        if: always()
-        run: |
-          rm -f all.txt
-          rm -f ips.txt
-          rm -f countries.txt
-          rm -f request.json
-          rm -f part_*
+          git commit -m "Update Netherlands and Turkey"
+          git push
