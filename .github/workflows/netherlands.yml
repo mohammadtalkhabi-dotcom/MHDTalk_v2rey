@@ -1,4 +1,4 @@
-name: NETHERLANDS200
+name: Netherlands
 
 on:
   workflow_dispatch:
@@ -19,37 +19,80 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq curl
+          sudo apt-get install -y jq
 
       - name: Download subscription
         run: |
           set -e
 
-          curl -fL --retry 3 --retry-delay 2 \
+          curl -fL --retry 5 --retry-delay 3 \
             "https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/All_Configs_Sub.txt" \
             -o all.txt
 
-          echo "📥 Total lines:"
+          echo "📥 Total configs:"
           wc -l < all.txt
 
           if [ ! -s all.txt ]; then
-            echo "❌ all.txt خالی است"
+            echo "❌ فایل اصلی خالی است"
             exit 1
           fi
 
-      - name: Extract IPs
+      - name: Extract server IPs
         run: |
-          set -e
+          python3 <<'PY'
+          import re
+          import base64
 
-          # استخراج IPهای IPv4 از کل فایل
-          grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' all.txt |
-            sort -u > unique_ips.txt || true
+          IP_RE = re.compile(
+              r'\b(?:25[0-5]|2[0-4]\d|1?\d?\d)'
+              r'(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}\b'
+          )
 
-          echo "🌐 Unique IPs:"
-          wc -l < unique_ips.txt
+          def decode_vmess(line):
+              if not line.startswith("vmess://"):
+                  return ""
+
+              data = line[8:].split("#", 1)[0]
+              data += "=" * (-len(data) % 4)
+
+              try:
+                  return base64.b64decode(data).decode(
+                      "utf-8", errors="ignore"
+                  )
+              except Exception:
+                  return ""
+
+          ips = set()
+
+          with open(
+              "all.txt",
+              "r",
+              encoding="utf-8",
+              errors="ignore"
+          ) as f:
+
+              for line in f:
+                  line = line.strip()
+
+                  if not line:
+                      continue
+
+                  ips.update(IP_RE.findall(line))
+
+                  decoded = decode_vmess(line)
+
+                  if decoded:
+                      ips.update(IP_RE.findall(decoded))
+
+          with open("unique_ips.txt", "w") as f:
+              for ip in sorted(ips):
+                  f.write(ip + "\n")
+
+          print("🌐 Unique IPs:", len(ips))
+          PY
 
           if [ ! -s unique_ips.txt ]; then
-            echo "❌ هیچ IPv4 در فایل پیدا نشد"
+            echo "❌ هیچ IPای پیدا نشد"
             exit 1
           fi
 
@@ -59,11 +102,16 @@ jobs:
 
           > country_map.txt
 
-          # ip-api حداکثر 100 IP در هر Batch
           split -l 100 unique_ips.txt ip_chunk_
 
+          total=$(ls ip_chunk_* 2>/dev/null | wc -l)
+          current=0
+
           for chunk in ip_chunk_*; do
-            echo "🔎 Checking $(wc -l < "$chunk") IPs..."
+
+            current=$((current + 1))
+
+            echo "🔎 Batch $current / $total"
 
             jq -R -s '
               split("\n")
@@ -72,13 +120,13 @@ jobs:
             ' "$chunk" > request.json
 
             response=$(curl -sS \
+              --max-time 60 \
               --retry 3 \
               --retry-delay 2 \
-              --max-time 60 \
               -X POST \
               "http://ip-api.com/batch" \
               -H "Content-Type: application/json" \
-              --data-binary @request.json)
+              --data-binary @request.json || true)
 
             if echo "$response" | jq -e 'type == "array"' >/dev/null 2>&1; then
 
@@ -91,25 +139,20 @@ jobs:
 
             else
               echo "⚠️ API response invalid"
-              echo "$response"
             fi
 
-            # جلوگیری از Rate Limit
             sleep 5
           done
-
-          rm -f ip_chunk_* request.json
 
           echo ""
           echo "🗺️ Mapped IPs:"
           wc -l < country_map.txt
 
-          echo ""
           echo "🇳🇱 Netherlands IPs:"
           grep -c '|Netherlands$' country_map.txt || true
 
           if [ ! -s country_map.txt ]; then
-            echo "❌ هیچ IPای توسط API شناسایی نشد"
+            echo "❌ هیچ IPای شناسایی نشد"
             exit 1
           fi
 
@@ -119,158 +162,12 @@ jobs:
 
           > netherlands.txt
 
-          # ساخت فایل فقط برای IPهای هلند
           awk -F'|' '$2 == "Netherlands" {print $1}' \
             country_map.txt > netherlands_ips.txt
 
-          echo "🇳🇱 Netherlands IP count:"
-          wc -l < netherlands_ips.txt
+          python3 <<'PY'
+          import re
+          import base64
 
-          # بررسی تک‌تک خطوط کانفیگ
-          while IFS= read -r line; do
-
-            [ -z "$line" ] && continue
-
-            ip=$(echo "$line" |
-              grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' |
-              head -n 1 || true)
-
-            [ -z "$ip" ] && continue
-
-            if grep -Fxq "$ip" netherlands_ips.txt; then
-              echo "$line" >> netherlands.txt
-            fi
-
-          done < all.txt
-
-          echo ""
-          echo "🇳🇱 Netherlands configs:"
-          wc -l < netherlands.txt
-
-          if [ ! -s netherlands.txt ]; then
-            echo "❌ هیچ کانفیگ هلندی پیدا نشد"
-            echo "⚠️ فایل SUBTEXT2 تغییر نمی‌کند."
-            exit 1
-          fi
-
-      - name: Select up to 200 random configs
-        run: |
-          set -e
-
-          shuf netherlands.txt | head -n 200 > selected.txt
-
-          count=$(wc -l < selected.txt)
-
-          echo "🎯 Selected: $count"
-
-          if [ "$count" -eq 0 ]; then
-            echo "❌ selected.txt خالی است"
-            exit 1
-          fi
-
-      - name: Rename configs
-        run: |
-          set -e
-
-          > SUBTEXT2
-
-          count=1
-
-          while IFS= read -r line; do
-
-            [ -z "$line" ] && continue
-
-            name="Netherlands $count"
-
-            # VMess
-            if [[ "$line" == vmess://* ]]; then
-
-              encoded="${line#vmess://}"
-
-              decoded=$(printf '%s' "$encoded" |
-                base64 -d 2>/dev/null || true)
-
-              if [ -n "$decoded" ] &&
-                 echo "$decoded" | jq -e . >/dev/null 2>&1; then
-
-                new_decoded=$(echo "$decoded" |
-                  jq --arg name "$name" '.ps = $name')
-
-                new_encoded=$(printf '%s' "$new_decoded" |
-                  base64 -w 0)
-
-                echo "vmess://$new_encoded" >> SUBTEXT2
-
-              else
-                echo "${line%%#*}#$name" >> SUBTEXT2
-              fi
-
-            # سایر کانفیگ‌ها
-            else
-
-              if [[ "$line" == *"#"* ]]; then
-                echo "$line" |
-                  sed "s/#[^#]*$/#$name/" >> SUBTEXT2
-              else
-                echo "$line#$name" >> SUBTEXT2
-              fi
-
-            fi
-
-            count=$((count + 1))
-
-            if [ "$count" -gt 200 ]; then
-              break
-            fi
-
-          done < selected.txt
-
-          final_count=$(wc -l < SUBTEXT2)
-
-          echo ""
-          echo "=============================="
-          echo "🇳🇱 FINAL SUBTEXT2"
-          echo "=============================="
-          echo "📄 Configs: $final_count"
-          echo ""
-
-          head -n 5 SUBTEXT2
-
-          if [ "$final_count" -eq 0 ]; then
-            echo "❌ SUBTEXT2 خالی است"
-            exit 1
-          fi
-
-      - name: Cleanup
-        if: always()
-        run: |
-          rm -f all.txt
-          rm -f unique_ips.txt
-          rm -f country_map.txt
-          rm -f netherlands_ips.txt
-          rm -f netherlands.txt
-          rm -f selected.txt
-          rm -f ip_chunk_*
-          rm -f request.json
-
-      - name: Commit and push
-        run: |
-          set -e
-
-          if [ ! -s SUBTEXT2 ]; then
-            echo "❌ SUBTEXT2 خالی است؛ Commit انجام نمی‌شود."
-            exit 1
-          fi
-
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-
-          git add SUBTEXT2
-
-          if git diff --cached --quiet; then
-            echo "✅ تغییری وجود ندارد"
-            exit 0
-          fi
-
-          git commit -m "Update 200 Netherlands configs"
-          git push
+          IP_RE = re.compile(
+              r'\b(?:25
