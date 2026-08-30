@@ -1,0 +1,546 @@
+name: Netherlands-Turkey-Italy
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq dnsutils
+
+      - name: Download subscription and country IP ranges
+        run: |
+          set -e
+
+          curl -fL \
+            "https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/All_Configs_Sub.txt" \
+            -o all.txt
+
+          echo "📥 تعداد کل خطوط:"
+          wc -l < all.txt
+
+          curl -fsSL \
+            "https://www.ipdeny.com/ipblocks/data/countries/nl.zone" \
+            -o nl.zone
+
+          curl -fsSL \
+            "https://www.ipdeny.com/ipblocks/data/countries/tr.zone" \
+            -o tr.zone
+
+          curl -fsSL \
+            "https://www.ipdeny.com/ipblocks/data/countries/it.zone" \
+            -o it.zone
+
+
+      - name: Detect countries, test latency and rank
+        run: |
+          set +e
+
+          # -----------------------------------------------------
+          # فقط تعداد تست‌های همزمان محدود است.
+          # تعداد خروجی هیچ محدودیتی ندارد.
+          # -----------------------------------------------------
+
+          MAX_PARALLEL=50
+
+          # -----------------------------------------------------
+          # استخراج host و port
+          # -----------------------------------------------------
+
+          get_host_port() {
+            local line="$1"
+            local host=""
+            local port=""
+
+            if [[ "$line" == vmess://* ]]; then
+
+              local encoded
+              local decoded
+
+              encoded="${line#vmess://}"
+
+              decoded=$(echo "$encoded" | base64 -d 2>/dev/null)
+
+              if [ -n "$decoded" ] \
+                && echo "$decoded" | jq -e . >/dev/null 2>&1; then
+
+                host=$(echo "$decoded" | jq -r '.add // empty')
+                port=$(echo "$decoded" | jq -r '.port // empty')
+
+              fi
+
+            else
+
+              local rest
+
+              rest=$(echo "$line" \
+                | sed -E 's#^[a-zA-Z0-9]+://##' \
+                | sed -E 's/^[^@]*@//')
+
+              host=$(echo "$rest" \
+                | grep -oE '^[^:/?#]+' \
+                | head -1)
+
+              port=$(echo "$rest" \
+                | grep -oE '^[^:/?#]+:[0-9]+' \
+                | grep -oE '[0-9]+$' \
+                | head -1)
+
+            fi
+
+            printf '%s\t%s' "$host" "$port"
+          }
+
+
+          # -----------------------------------------------------
+          # تبدیل hostname به IPv4
+          # -----------------------------------------------------
+
+          resolve_ip() {
+            local host="$1"
+
+            [ -z "$host" ] && return
+
+            if [[ "$host" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+              echo "$host"
+              return
+            fi
+
+            getent ahostsv4 "$host" 2>/dev/null \
+              | awk '{print $1; exit}'
+          }
+
+
+          # -----------------------------------------------------
+          # TCP latency
+          # -----------------------------------------------------
+
+          tcp_ping_ms() {
+            local host="$1"
+            local port="$2"
+
+            if [ -z "$host" ] || [ -z "$port" ]; then
+              echo 9999
+              return
+            fi
+
+            local start
+            local end
+            local rc
+
+            start=$(date +%s%N)
+
+            timeout 2 bash -c \
+              "exec 3<>/dev/tcp/$host/$port" \
+              2>/dev/null
+
+            rc=$?
+
+            end=$(date +%s%N)
+
+            if [ "$rc" -eq 0 ]; then
+              echo $(( (end - start) / 1000000 ))
+            else
+              echo 9999
+            fi
+          }
+
+
+          # =====================================================
+          # PASS 1
+          # استخراج همه host / port / IP
+          # =====================================================
+
+          > hosts_map.txt
+          > unique_ips.txt
+
+          while IFS= read -r line; do
+
+            [ -z "$line" ] && continue
+
+            hp=$(get_host_port "$line")
+
+            host="${hp%%$'\t'*}"
+            port="${hp##*$'\t'}"
+
+            ip=$(resolve_ip "$host")
+
+            b64line=$(printf '%s' "$line" | base64 -w 0)
+
+            printf '%s\t%s\t%s\t%s\n' \
+              "$b64line" \
+              "$ip" \
+              "$host" \
+              "$port" \
+              >> hosts_map.txt
+
+            if [ -n "$ip" ]; then
+              echo "$ip" >> unique_ips.txt
+            fi
+
+          done < all.txt
+
+
+          sort -u unique_ips.txt -o unique_ips.txt
+
+          echo ""
+          echo "🌐 تعداد IP یکتا:"
+          wc -l < unique_ips.txt
+
+
+          # =====================================================
+          # ساخت CIDR
+          # =====================================================
+
+          > cidrs.txt
+
+          awk '{print $0"\tNetherlands"}' nl.zone >> cidrs.txt
+          awk '{print $0"\tTurkey"}' tr.zone >> cidrs.txt
+          awk '{print $0"\tItaly"}' it.zone >> cidrs.txt
+
+
+          awk -F'\t' '
+
+            function ip2int(ip, a, n) {
+              n=split(ip,a,".")
+              return a[1]*16777216 \
+                   + a[2]*65536 \
+                   + a[3]*256 \
+                   + a[4]
+            }
+
+            {
+              split($1, cn, "/")
+
+              base=ip2int(cn[1])
+              prefix=cn[2]+0
+
+              size=1
+
+              for(i=0; i<32-prefix; i++)
+                size=size*2
+
+              print base "\t" \
+                    (base+size-1) "\t" \
+                    $2
+            }
+
+          ' cidrs.txt > cidr_ranges.txt
+
+
+          # =====================================================
+          # تشخیص کشور IP
+          # =====================================================
+
+          awk -F'\t' '
+
+            function ip2int(ip, a, n) {
+              n=split(ip,a,".")
+              return a[1]*16777216 \
+                   + a[2]*65536 \
+                   + a[3]*256 \
+                   + a[4]
+            }
+
+            FNR==NR {
+              start[NR]=$1
+              end[NR]=$2
+              ctry[NR]=$3
+              n=NR
+              next
+            }
+
+            {
+              ipnum=ip2int($1)
+              country="Unknown"
+
+              for(i=1; i<=n; i++) {
+
+                if(ipnum >= start[i] && ipnum <= end[i]) {
+                  country=ctry[i]
+                  break
+                }
+
+              }
+
+              print $1 "|" country
+            }
+
+          ' cidr_ranges.txt unique_ips.txt > country_map.txt
+
+
+          echo ""
+          echo "🗺️ نمونه تشخیص کشور:"
+          head -n 10 country_map.txt
+
+
+          # =====================================================
+          # PASS 2
+          # فقط هلند، ترکیه و ایتالیا
+          # =====================================================
+
+          > matched.txt
+
+          while IFS=$'\t' read -r b64line ip host port; do
+
+            [ -z "$b64line" ] && continue
+
+            country="Unknown"
+
+            if [ -n "$ip" ]; then
+
+              country=$(
+                grep "^$ip|" country_map.txt \
+                | cut -d'|' -f2 \
+                | head -1
+              )
+
+            fi
+
+
+            if [ "$country" = "Netherlands" ] \
+              || [ "$country" = "Turkey" ] \
+              || [ "$country" = "Italy" ]; then
+
+              printf '%s\t%s\t%s\t%s\n' \
+                "$country" \
+                "$host" \
+                "$port" \
+                "$b64line" \
+                >> matched.txt
+
+            fi
+
+          done < hosts_map.txt
+
+
+          echo ""
+          echo "🎯 تعداد کاندیدها:"
+          wc -l < matched.txt
+
+
+          # =====================================================
+          # PASS 3
+          # تست TCP به صورت موازی
+          # =====================================================
+
+          > results.txt
+
+          running=0
+
+          while IFS=$'\t' read -r country host port b64line; do
+
+            [ -z "$country" ] && continue
+
+            (
+              latency=$(tcp_ping_ms "$host" "$port")
+
+              printf '%s\t%s\t%s\n' \
+                "$country" \
+                "$latency" \
+                "$b64line" \
+                >> results.txt
+
+            ) &
+
+
+            running=$((running + 1))
+
+
+            if [ "$running" -ge "$MAX_PARALLEL" ]; then
+
+              wait -n
+
+              running=$((running - 1))
+
+            fi
+
+          done < matched.txt
+
+
+          wait
+
+
+          # =====================================================
+          # PASS 4
+          #
+          # بدون TOP_N
+          # بدون head
+          # بدون محدودیت تعداد کانفیگ
+          #
+          # همه کانفیگ‌های سالم وارد خروجی می‌شوند.
+          # =====================================================
+
+          > Netherlands-Turkey-Italy-2
+
+
+          for country in Netherlands Turkey Italy; do
+
+            rank=1
+
+
+            grep -P "^$country\t" results.txt \
+              | awk -F'\t' '$2 != 9999' \
+              | sort -t$'\t' -k2,2n \
+              | while IFS=$'\t' read -r c latency b64line; do
+
+
+                  [ -z "$b64line" ] && continue
+
+
+                  line=$(echo "$b64line" | base64 -d 2>/dev/null)
+
+
+                  [ -z "$line" ] && continue
+
+
+                  tag="$country #$rank (${latency}ms)"
+
+
+                  # -------------------------------------------------
+                  # VMess
+                  # -------------------------------------------------
+
+                  if [[ "$line" == vmess://* ]]; then
+
+                    encoded="${line#vmess://}"
+
+                    decoded=$(
+                      echo "$encoded" \
+                      | base64 -d 2>/dev/null
+                    )
+
+
+                    if [ -n "$decoded" ] \
+                      && echo "$decoded" | jq -e . >/dev/null 2>&1; then
+
+
+                      new_decoded=$(
+                        echo "$decoded" \
+                        | jq --arg name "$tag" '.ps = $name'
+                      )
+
+
+                      new_encoded=$(
+                        echo "$new_decoded" \
+                        | base64 -w 0
+                      )
+
+
+                      echo "vmess://$new_encoded" \
+                        >> Netherlands-Turkey-Italy-2
+
+
+                    else
+
+                      echo "${line%%#*}#$tag" \
+                        >> Netherlands-Turkey-Italy-2
+
+                    fi
+
+
+                  # -------------------------------------------------
+                  # سایر پروتکل‌ها
+                  # -------------------------------------------------
+
+                  else
+
+                    echo "${line%%#*}#$tag" \
+                      >> Netherlands-Turkey-Italy-2
+
+                  fi
+
+
+                  rank=$((rank + 1))
+
+
+              done
+
+          done
+
+
+          # =====================================================
+          # گزارش نهایی
+          # =====================================================
+
+          echo ""
+          echo "=========================================="
+          echo "📄 فایل خروجی:"
+          echo "Netherlands-Turkey-Italy-2"
+          echo "=========================================="
+
+
+          TOTAL=$(wc -l < Netherlands-Turkey-Italy-2)
+
+          NL_COUNT=$(
+            grep -c 'Netherlands #' \
+            Netherlands-Turkey-Italy-2 || true
+          )
+
+          TR_COUNT=$(
+            grep -c 'Turkey #' \
+            Netherlands-Turkey-Italy-2 || true
+          )
+
+          IT_COUNT=$(
+            grep -c 'Italy #' \
+            Netherlands-Turkey-Italy-2 || true
+          )
+
+
+          echo ""
+          echo "📊 تعداد کل خروجی: $TOTAL"
+          echo "🇳🇱 Netherlands: $NL_COUNT"
+          echo "🇹🇷 Turkey:      $TR_COUNT"
+          echo "🇮🇹 Italy:       $IT_COUNT"
+          echo ""
+
+
+          # =====================================================
+          # پاکسازی
+          # =====================================================
+
+          rm -f \
+            unique_ips.txt \
+            country_map.txt \
+            hosts_map.txt \
+            matched.txt \
+            results.txt \
+            cidrs.txt \
+            cidr_ranges.txt \
+            nl.zone \
+            tr.zone \
+            it.zone \
+            all.txt
+
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add Netherlands-Turkey-Italy-2
+
+          if git diff --cached --quiet; then
+            echo "✅ بدون تغییر"
+            exit 0
+          fi
+
+          git commit \
+            -m "Update Netherlands-Turkey-Italy-2"
+
+          git push
