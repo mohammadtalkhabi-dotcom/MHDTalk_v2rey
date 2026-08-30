@@ -13,144 +13,99 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
-      - name: Install
-        run: sudo apt-get update && sudo apt-get install -y jq
+      - uses: actions/checkout@v4
 
-      - name: Download source
+      - name: Download
         run: |
-          set -e
+          curl -L "https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/All_Configs_Sub.txt" -o all.txt
 
-          curl -L --fail --retry 3 \
-            "https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/All_Configs_Sub.txt" \
-            -o all.txt
-
-          echo "Total lines:"
-          wc -l all.txt
-
-      - name: Take lines 1000-3000
+      - name: Get IPs
         run: |
-          set -e
+          sed -n '1000,3000p' all.txt |
+          grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' |
+          sort -u > ips.txt
 
-          sed -n '1000,3000p' all.txt > range.txt
+          echo "IPs:"
+          wc -l ips.txt
 
-          echo "Lines selected:"
-          wc -l range.txt
-
-          if [ ! -s range.txt ]; then
-            echo "ERROR: selected range is empty"
-            exit 1
-          fi
-
-      - name: Extract IPs
+      - name: Find Netherlands
         run: |
-          python3 <<'PY'
-          import re
-          import base64
-
-          ip_re = re.compile(
-              r'(?<!\d)(?:'
-              r'(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)'
-              r'\.){3}'
-              r'(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)'
-              r'(?!\d)'
-          )
-
-          ips = set()
-
-          with open("range.txt", "r", encoding="utf-8", errors="ignore") as f:
-              for line in f:
-                  line = line.strip()
-
-                  # IPهای مستقیم
-                  ips.update(ip_re.findall(line))
-
-                  # VMess
-                  if line.startswith("vmess://"):
-                      try:
-                          data = line[8:].split("#", 1)[0]
-                          data += "=" * (-len(data) % 4)
-
-                          decoded = base64.b64decode(
-                              data
-                          ).decode("utf-8", errors="ignore")
-
-                          ips.update(ip_re.findall(decoded))
-                      except:
-                          pass
-
-          with open("ips.txt", "w") as f:
-              for ip in sorted(ips):
-                  f.write(ip + "\n")
-
-          print("Unique IPs:", len(ips))
-          PY
-
-          if [ ! -s ips.txt ]; then
-            echo "ERROR: No IP found"
-            exit 1
-          fi
-
-      - name: Check countries
-        run: |
-          set -e
-
-          > countries.txt
+          > nl.txt
 
           split -l 100 ips.txt part_
 
-          for part in part_*; do
-
-            echo "Checking $(wc -l < "$part") IPs..."
+          for p in part_*; do
 
             jq -R -s '
               split("\n")
               | map(select(length > 0))
               | map({"query": .})
-            ' "$part" > request.json
+            ' "$p" > request.json
 
-            response=$(curl -sS \
-              --max-time 60 \
+            curl -s \
               -X POST \
               "http://ip-api.com/batch" \
               -H "Content-Type: application/json" \
-              --data-binary @request.json || true)
+              -d @request.json |
+            jq -r '
+              .[]
+              | select(.country == "Netherlands")
+              | .query
+            ' >> nl.txt
 
-            if echo "$response" | jq -e 'type == "array"' >/dev/null 2>&1; then
-              echo "$response" |
-                jq -r '
-                  .[]
-                  | select(.status == "success")
-                  | "\(.query)|\(.country)"
-                ' >> countries.txt
-            fi
-
-            # کمی فاصله برای جلوگیری از محدودیت API
             sleep 5
-
           done
 
-          echo ""
+          sort -u nl.txt -o nl.txt
+
           echo "Netherlands IPs:"
-          grep -c '|Netherlands$' countries.txt || true
+          wc -l nl.txt
 
-          rm -f part_* request.json
+      - name: Make Netherlands file
+        run: |
+          > Netherlands
+          n=1
 
-          if [ ! -s countries.txt ]; then
-            echo "ERROR: API returned no country data"
+          while read line; do
+
+            ip=$(echo "$line" |
+              grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' |
+              head -1)
+
+            if grep -Fxq "$ip" nl.txt; then
+
+              line="${line%%#*}"
+
+              echo "$line#Netherlands $n" >> Netherlands
+
+              n=$((n+1))
+
+            fi
+
+          done < <(sed -n '1000,3000p' all.txt)
+
+          echo "Final:"
+          wc -l Netherlands
+
+      - name: Save
+        run: |
+          if [ ! -s Netherlands ]; then
+            echo "No Netherlands configs found"
             exit 1
           fi
 
-      - name: Extract Netherlands configs
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add Netherlands
+
+          git diff --cached --quiet ||
+          git commit -m "Update Netherlands"
+
+          git push
+
+      - name: Clean
+        if: always()
         run: |
-          set -e
-
-          > Netherlands
-
-          awk -F'|' '$2 == "Netherlands" {print $1}' \
-            countries.txt > nl_ips.txt
-
-          if [ ! -s nl_ips.txt ]; then
-            echo "ERROR: No Netherlands
+          rm -f all.txt ips.txt nl.txt request.json part_*
