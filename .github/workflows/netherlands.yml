@@ -14,34 +14,49 @@ jobs:
 
     steps:
 
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: Download
         run: |
-          curl -L "https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/All_Configs_Sub.txt" -o all.txt
+          curl -fL --retry 3 \
+            "https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/All_Configs_Sub.txt" \
+            -o all.txt
+
+          test -s all.txt
+
+      - name: Select first 5000
+        run: |
+          head -n 5000 all.txt > range.txt
+
+          echo "Lines:"
+          wc -l range.txt
 
       - name: Get IPs
         run: |
-          sed -n '1000,3000p' all.txt |
-          grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' |
-          sort -u > ips.txt
+          grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' range.txt |
+          sort -u > ips.txt || true
 
-          echo "IPs:"
+          echo "Unique IPs:"
           wc -l ips.txt
 
-      - name: Find Netherlands
+      - name: Find Netherlands IPs
         run: |
           > nl.txt
 
           split -l 100 ips.txt part_
 
-          for p in part_*; do
+          for part in part_*; do
+
+            [ -f "$part" ] || continue
 
             jq -R -s '
               split("\n")
               | map(select(length > 0))
-              | map({"query": .})
-            ' "$p" > request.json
+            ' "$part" > request.json
 
             curl -s \
               -X POST \
@@ -50,11 +65,12 @@ jobs:
               -d @request.json |
             jq -r '
               .[]
+              | select(.status == "success")
               | select(.country == "Netherlands")
               | .query
             ' >> nl.txt
 
-            sleep 5
+            sleep 2
           done
 
           sort -u nl.txt -o nl.txt
@@ -62,31 +78,29 @@ jobs:
           echo "Netherlands IPs:"
           wc -l nl.txt
 
-      - name: Make Netherlands file
+      - name: Create Netherlands
         run: |
           > Netherlands
-          n=1
 
-          while read line; do
+          while IFS= read -r line; do
 
             ip=$(echo "$line" |
               grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' |
               head -1)
 
-            if grep -Fxq "$ip" nl.txt; then
+            if [ -n "$ip" ] &&
+               grep -Fxq "$ip" nl.txt; then
 
-              line="${line%%#*}"
-
-              echo "$line#Netherlands $n" >> Netherlands
-
-              n=$((n+1))
+              echo "$line" >> Netherlands
 
             fi
 
-          done < <(sed -n '1000,3000p' all.txt)
+          done < range.txt
 
-          echo "Final:"
+          echo "Netherlands configs:"
           wc -l Netherlands
+
+          head -n 5 Netherlands
 
       - name: Save
         run: |
@@ -100,12 +114,19 @@ jobs:
 
           git add Netherlands
 
-          git diff --cached --quiet ||
-          git commit -m "Update Netherlands"
+          if git diff --cached --quiet; then
+            echo "No changes"
+          else
+            git commit -m "Update Netherlands"
+            git push
+          fi
 
-          git push
-
-      - name: Clean
+      - name: Cleanup
         if: always()
         run: |
-          rm -f all.txt ips.txt nl.txt request.json part_*
+          rm -f all.txt
+          rm -f range.txt
+          rm -f ips.txt
+          rm -f nl.txt
+          rm -f request.json
+          rm -f part_*
