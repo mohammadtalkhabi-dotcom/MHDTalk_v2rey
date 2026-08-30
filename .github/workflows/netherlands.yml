@@ -3,7 +3,7 @@ name: Netherlands
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */4 * * *"
+    - cron: "0 0 * * *"
 
 permissions:
   contents: write
@@ -16,143 +16,130 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y jq
+      - name: Install
+        run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Download subscription
+      - name: Download source
         run: |
           set -e
 
-          curl -fL --retry 5 --retry-delay 3 \
+          curl -L --fail --retry 3 \
             "https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/All_Configs_Sub.txt" \
             -o all.txt
 
-          echo "📥 Total configs:"
-          wc -l < all.txt
+          echo "Total lines:"
+          wc -l all.txt
 
-          if [ ! -s all.txt ]; then
-            echo "❌ فایل اصلی خالی است"
+      - name: Take lines 1000-3000
+        run: |
+          set -e
+
+          sed -n '1000,3000p' all.txt > range.txt
+
+          echo "Lines selected:"
+          wc -l range.txt
+
+          if [ ! -s range.txt ]; then
+            echo "ERROR: selected range is empty"
             exit 1
           fi
 
-      - name: Extract server IPs
+      - name: Extract IPs
         run: |
           python3 <<'PY'
           import re
           import base64
 
-          IP_RE = re.compile(
-              r'\b(?:25[0-5]|2[0-4]\d|1?\d?\d)'
-              r'(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}\b'
+          ip_re = re.compile(
+              r'(?<!\d)(?:'
+              r'(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)'
+              r'\.){3}'
+              r'(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)'
+              r'(?!\d)'
           )
-
-          def decode_vmess(line):
-              if not line.startswith("vmess://"):
-                  return ""
-
-              data = line[8:].split("#", 1)[0]
-              data += "=" * (-len(data) % 4)
-
-              try:
-                  return base64.b64decode(data).decode(
-                      "utf-8", errors="ignore"
-                  )
-              except Exception:
-                  return ""
 
           ips = set()
 
-          with open(
-              "all.txt",
-              "r",
-              encoding="utf-8",
-              errors="ignore"
-          ) as f:
-
+          with open("range.txt", "r", encoding="utf-8", errors="ignore") as f:
               for line in f:
                   line = line.strip()
 
-                  if not line:
-                      continue
+                  # IPهای مستقیم
+                  ips.update(ip_re.findall(line))
 
-                  ips.update(IP_RE.findall(line))
+                  # VMess
+                  if line.startswith("vmess://"):
+                      try:
+                          data = line[8:].split("#", 1)[0]
+                          data += "=" * (-len(data) % 4)
 
-                  decoded = decode_vmess(line)
+                          decoded = base64.b64decode(
+                              data
+                          ).decode("utf-8", errors="ignore")
 
-                  if decoded:
-                      ips.update(IP_RE.findall(decoded))
+                          ips.update(ip_re.findall(decoded))
+                      except:
+                          pass
 
-          with open("unique_ips.txt", "w") as f:
+          with open("ips.txt", "w") as f:
               for ip in sorted(ips):
                   f.write(ip + "\n")
 
-          print("🌐 Unique IPs:", len(ips))
+          print("Unique IPs:", len(ips))
           PY
 
-          if [ ! -s unique_ips.txt ]; then
-            echo "❌ هیچ IPای پیدا نشد"
+          if [ ! -s ips.txt ]; then
+            echo "ERROR: No IP found"
             exit 1
           fi
 
-      - name: Detect countries
+      - name: Check countries
         run: |
           set -e
 
-          > country_map.txt
+          > countries.txt
 
-          split -l 100 unique_ips.txt ip_chunk_
+          split -l 100 ips.txt part_
 
-          total=$(ls ip_chunk_* 2>/dev/null | wc -l)
-          current=0
+          for part in part_*; do
 
-          for chunk in ip_chunk_*; do
-
-            current=$((current + 1))
-
-            echo "🔎 Batch $current / $total"
+            echo "Checking $(wc -l < "$part") IPs..."
 
             jq -R -s '
               split("\n")
               | map(select(length > 0))
               | map({"query": .})
-            ' "$chunk" > request.json
+            ' "$part" > request.json
 
             response=$(curl -sS \
               --max-time 60 \
-              --retry 3 \
-              --retry-delay 2 \
               -X POST \
               "http://ip-api.com/batch" \
               -H "Content-Type: application/json" \
               --data-binary @request.json || true)
 
             if echo "$response" | jq -e 'type == "array"' >/dev/null 2>&1; then
-
               echo "$response" |
                 jq -r '
                   .[]
                   | select(.status == "success")
                   | "\(.query)|\(.country)"
-                ' >> country_map.txt
-
-            else
-              echo "⚠️ API response invalid"
+                ' >> countries.txt
             fi
 
+            # کمی فاصله برای جلوگیری از محدودیت API
             sleep 5
+
           done
 
           echo ""
-          echo "🗺️ Mapped IPs:"
-          wc -l < country_map.txt
+          echo "Netherlands IPs:"
+          grep -c '|Netherlands$' countries.txt || true
 
-          echo "🇳🇱 Netherlands IPs:"
-          grep -c '|Netherlands$' country_map.txt || true
+          rm -f part_* request.json
 
-          if [ ! -s country_map.txt ]; then
-            echo "❌ هیچ IPای شناسایی نشد"
+          if [ ! -s countries.txt ]; then
+            echo "ERROR: API returned no country data"
             exit 1
           fi
 
@@ -160,14 +147,10 @@ jobs:
         run: |
           set -e
 
-          > netherlands.txt
+          > Netherlands
 
           awk -F'|' '$2 == "Netherlands" {print $1}' \
-            country_map.txt > netherlands_ips.txt
+            countries.txt > nl_ips.txt
 
-          python3 <<'PY'
-          import re
-          import base64
-
-          IP_RE = re.compile(
-              r'\b(?:25
+          if [ ! -s nl_ips.txt ]; then
+            echo "ERROR: No Netherlands
