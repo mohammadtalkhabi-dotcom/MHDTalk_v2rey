@@ -17,8 +17,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install jq
-        run: sudo apt-get update -y && sudo apt-get install -y jq
+      - name: Install tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq dnsutils geoip-bin geoip-database
 
       - name: Download subscription
         run: |
@@ -29,47 +31,62 @@ jobs:
         run: |
           set +e
 
-          grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' all.txt | sort -u > unique_ips.txt
+          get_host() {
+            local line="$1"
+            local host=""
 
+            if [[ "$line" == vmess://* ]]; then
+              local encoded decoded
+              encoded="${line#vmess://}"
+              decoded=$(echo "$encoded" | base64 -d 2>/dev/null)
+              if [ -n "$decoded" ] && echo "$decoded" | jq -e . >/dev/null 2>&1; then
+                host=$(echo "$decoded" | jq -r '.add // empty')
+              fi
+            else
+              host=$(echo "$line" \
+                | sed -E 's#^[a-zA-Z0-9]+://##' \
+                | sed -E 's/^[^@]*@//' \
+                | grep -oE '^[^:/?#]+')
+            fi
+
+            echo "$host"
+          }
+
+          resolve_ip() {
+            local host="$1"
+            [ -z "$host" ] && return
+            if [[ "$host" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+              echo "$host"
+              return
+            fi
+            getent ahostsv4 "$host" 2>/dev/null | awk '{print $1; exit}'
+          }
+
+          > hosts_map.txt
+          > unique_ips.txt
+
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            host=$(get_host "$line")
+            ip=$(resolve_ip "$host")
+            printf '%s\t%s\n' "$line" "$ip" >> hosts_map.txt
+            [ -n "$ip" ] && echo "$ip" >> unique_ips.txt
+          done < all.txt
+
+          sort -u unique_ips.txt -o unique_ips.txt
           echo "🌐 تعداد IP یکتا: $(wc -l < unique_ips.txt)"
 
           > country_map.txt
 
-          if [ -s unique_ips.txt ]; then
+          while IFS= read -r ip; do
+            [ -z "$ip" ] && continue
+            country=$(geoiplookup "$ip" 2>/dev/null | head -1 | sed -n 's/.*: *//p' | sed -n 's/^[^,]*, //p')
+            [ -z "$country" ] && country="Unknown"
+            echo "$ip|$country" >> country_map.txt
+          done < unique_ips.txt
 
-            split -l 100 unique_ips.txt chunk_
-
-            for chunk in chunk_*; do
-
-              json=$(jq -R . < "$chunk" | jq -s . 2>/dev/null || echo '[]')
-
-              response=$(curl -s \
-                -X POST \
-                "http://ip-api.com/batch" \
-                -H "Content-Type: application/json" \
-                -d "$json")
-
-              if echo "$response" | jq -e . >/dev/null 2>&1; then
-
-                echo "$response" |
-                  jq -r '.[] | "\(.query)|\(.country // "Unknown")"' \
-                  >> country_map.txt
-
-              else
-
-                while read ip; do
-                  echo "$ip|Unknown"
-                done < "$chunk" >> country_map.txt
-
-              fi
-
-              sleep 5
-
-            done
-
-            rm -f chunk_*
-
-          fi
+          echo "🗺️ نمونه country_map:"
+          head -n 5 country_map.txt
 
           > Netherlands
           > Turkey
@@ -77,88 +94,47 @@ jobs:
           nl=1
           tr=1
 
-          while IFS= read -r line; do
-
+          while IFS=$'\t' read -r line ip; do
             [ -z "$line" ] && continue
 
-            ip=$(echo "$line" |
-              grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' |
-              head -1)
-
             country="Unknown"
-
             if [ -n "$ip" ]; then
-              country=$(grep "^$ip|" country_map.txt |
-                cut -d'|' -f2 |
-                head -1)
-
+              country=$(grep "^$ip|" country_map.txt | cut -d'|' -f2 | head -1)
               [ -z "$country" ] && country="Unknown"
             fi
 
-            # VMESS
-            if [[ "$line" == vmess://* ]]; then
-
-              encoded=$(echo "$line" | sed 's/vmess:\/\///')
-
-              decoded=$(echo "$encoded" |
-                base64 -d 2>/dev/null || echo '')
-
-              if [ -n "$decoded" ] &&
-                 echo "$decoded" | jq -e . >/dev/null 2>&1; then
-
-                if [ "$country" = "Netherlands" ]; then
-                  new_decoded=$(echo "$decoded" |
-                    jq --arg name "Netherlands $nl" '.ps = $name')
-
-                  new_encoded=$(echo "$new_decoded" |
-                    base64 -w 0)
-
-                  echo "vmess://$new_encoded" >> Netherlands
-
-                  nl=$((nl + 1))
-                fi
-
-                if [ "$country" = "Turkey" ]; then
-                  new_decoded=$(echo "$decoded" |
-                    jq --arg name "Turkey $tr" '.ps = $name')
-
-                  new_encoded=$(echo "$new_decoded" |
-                    base64 -w 0)
-
-                  echo "vmess://$new_encoded" >> Turkey
-
-                  tr=$((tr + 1))
-                fi
-
-              else
-
-                if [ "$country" = "Netherlands" ]; then
-                  echo "${line%%#*}#Netherlands $nl" >> Netherlands
-                  nl=$((nl + 1))
-                fi
-
-                if [ "$country" = "Turkey" ]; then
-                  echo "${line%%#*}#Turkey $tr" >> Turkey
-                  tr=$((tr + 1))
-                fi
-
-              fi
-
-            else
-
-              if [ "$country" = "Netherlands" ]; then
-                echo "${line%%#*}#Netherlands $nl" >> Netherlands
-                nl=$((nl + 1))
-              fi
-
-              if [ "$country" = "Turkey" ]; then
-                echo "${line%%#*}#Turkey $tr" >> Turkey
-                tr=$((tr + 1))
-              fi
-
+            if [ "$country" != "Netherlands" ] && [ "$country" != "Turkey" ]; then
+              continue
             fi
 
-          done < all.txt
+            if [ "$country" = "Netherlands" ]; then
+              idx=$nl
+            else
+              idx=$tr
+            fi
+
+            if [[ "$line" == vmess://* ]]; then
+              encoded=$(echo "$line" | sed 's/vmess:\/\///')
+              decoded=$(echo "$encoded" | base64 -d 2>/dev/null || echo '')
+
+              if [ -n "$decoded" ] && echo "$decoded" | jq -e . >/dev/null 2>&1; then
+                new_decoded=$(echo "$decoded" | jq --arg name "$country $idx" '.ps = $name')
+                new_encoded=$(echo "$new_decoded" | base64 -w 0)
+                echo "vmess://$new_encoded" >> "$country"
+              else
+                echo "${line%%#*}#$country $idx" >> "$country"
+              fi
+            else
+              echo "${line%%#*}#$country $idx" >> "$country"
+            fi
+
+            if [ "$country" = "Netherlands" ]; then
+              nl=$((nl + 1))
+            else
+              tr=$((tr + 1))
+            fi
+
+          done < hosts_map.txt
 
           echo ""
           echo "🇳🇱 Netherlands: $(wc -l < Netherlands)"
@@ -172,7 +148,7 @@ jobs:
           echo "نمونه Turkey:"
           head -n 3 Turkey
 
-          rm -f unique_ips.txt country_map.txt
+          rm -f unique_ips.txt country_map.txt hosts_map.txt
 
       - name: Commit and push
         run: |
