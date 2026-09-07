@@ -11,6 +11,7 @@ permissions:
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
 
     steps:
 
@@ -20,7 +21,15 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y jq dnsutils geoip-bin geoip-database
+          sudo apt-get install -y jq dnsutils geoip-bin geoip-database unzip curl
+
+      - name: Install Xray-core
+        run: |
+          curl -fL -o xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
+          unzip -o xray.zip -d xray-bin
+          chmod +x xray-bin/xray
+          sudo mv xray-bin/xray /usr/local/bin/xray
+          xray version
 
       - name: Download subscription
         run: |
@@ -143,19 +152,249 @@ jobs:
           echo "🇹🇷 Turkey: $(wc -l < Turkey)"
           echo "🇮🇹 Italy: $(wc -l < Italy)"
 
-          echo ""
-          echo "نمونه Netherlands:"
-          head -n 3 Netherlands
-
-          echo ""
-          echo "نمونه Turkey:"
-          head -n 3 Turkey
-
-          echo ""
-          echo "نمونه Italy:"
-          head -n 3 Italy
-
           rm -f unique_ips.txt country_map.txt hosts_map.txt
+
+      - name: Test Gemini connectivity and tag names
+        run: |
+          cat > test_gemini.py << 'PYEOF'
+          import base64, json, os, subprocess, time, re
+          import urllib.request, urllib.error, urllib.parse
+          from concurrent.futures import ThreadPoolExecutor
+          from threading import Lock
+
+          TAG = "®️ "
+          TEST_URLS = [
+              "https://generativelanguage.googleapis.com/v1beta/models",
+              "https://gemini.google.com/",
+          ]
+          FILES = ["Netherlands", "Turkey", "Italy"]
+
+          port_lock = Lock()
+          ports = list(range(10800, 10816))
+
+          def get_port():
+              with port_lock:
+                  return ports.pop()
+
+          def release_port(p):
+              with port_lock:
+                  ports.append(p)
+
+          def b64pad(s):
+              return s + "=" * (-len(s) % 4)
+
+          def parse_vmess(uri):
+              raw = base64.b64decode(b64pad(uri[len("vmess://"):])).decode("utf-8", "ignore")
+              d = json.loads(raw)
+              net = d.get("net", "tcp") or "tcp"
+              tls = d.get("tls", "")
+              stream = {"network": net}
+              if net == "ws":
+                  stream["wsSettings"] = {"path": d.get("path", "/"), "headers": {"Host": d.get("host") or d.get("add")}}
+              if net == "grpc":
+                  stream["grpcSettings"] = {"serviceName": d.get("path", "")}
+              if tls == "tls":
+                  stream["security"] = "tls"
+                  stream["tlsSettings"] = {"serverName": d.get("sni") or d.get("host") or d.get("add"), "allowInsecure": True}
+              outbound = {
+                  "protocol": "vmess",
+                  "settings": {"vnext": [{
+                      "address": d.get("add"), "port": int(d.get("port")),
+                      "users": [{"id": d.get("id"), "alterId": int(d.get("aid") or 0), "security": "auto"}]
+                  }]},
+                  "streamSettings": stream,
+              }
+              return outbound, d.get("ps", "")
+
+          def parse_uri_generic(uri, scheme):
+              # vless:// or trojan://
+              body = uri[len(scheme) + 3:]
+              name = ""
+              if "#" in body:
+                  body, frag = body.split("#", 1)
+                  name = urllib.parse.unquote(frag)
+              userinfo, hostpart = body.split("@", 1)
+              hostport, _, query = hostpart.partition("?")
+              host, port = hostport.rsplit(":", 1)
+              params = urllib.parse.parse_qs(query)
+              g = lambda k, default="": params.get(k, [default])[0]
+
+              net = g("type", "tcp") or "tcp"
+              security = g("security", "")
+              stream = {"network": net}
+              if net == "ws":
+                  stream["wsSettings"] = {"path": g("path", "/"), "headers": {"Host": g("host", host)}}
+              if net == "grpc":
+                  stream["grpcSettings"] = {"serviceName": g("serviceName", g("path", ""))}
+              if security == "tls":
+                  stream["security"] = "tls"
+                  stream["tlsSettings"] = {"serverName": g("sni", host), "allowInsecure": True}
+              elif security == "reality":
+                  stream["security"] = "reality"
+                  stream["realitySettings"] = {
+                      "serverName": g("sni", host), "fingerprint": g("fp", "chrome"),
+                      "publicKey": g("pbk", ""), "shortId": g("sid", ""), "spiderX": g("spx", "")
+                  }
+
+              if scheme == "vless":
+                  user = {"id": userinfo, "encryption": "none"}
+                  flow = g("flow", "")
+                  if flow:
+                      user["flow"] = flow
+                  outbound = {
+                      "protocol": "vless",
+                      "settings": {"vnext": [{"address": host, "port": int(port), "users": [user]}]},
+                      "streamSettings": stream,
+                  }
+              else:  # trojan
+                  outbound = {
+                      "protocol": "trojan",
+                      "settings": {"servers": [{"address": host, "port": int(port), "password": userinfo}]},
+                      "streamSettings": stream,
+                  }
+              return outbound, name
+
+          def parse_ss(uri):
+              body = uri[len("ss://"):]
+              name = ""
+              if "#" in body:
+                  body, frag = body.split("#", 1)
+                  name = urllib.parse.unquote(frag)
+              if "@" in body:
+                  userinfo, hostport = body.rsplit("@", 1)
+                  try:
+                      userinfo = base64.b64decode(b64pad(userinfo)).decode()
+                  except Exception:
+                      pass
+                  method, password = userinfo.split(":", 1)
+                  host, port = hostport.split(":", 1)
+              else:
+                  decoded = base64.b64decode(b64pad(body)).decode()
+                  methodpass, hostport = decoded.rsplit("@", 1)
+                  method, password = methodpass.split(":", 1)
+                  host, port = hostport.split(":", 1)
+              outbound = {
+                  "protocol": "shadowsocks",
+                  "settings": {"servers": [{"address": host, "port": int(port), "method": method, "password": password}]},
+              }
+              return outbound, name
+
+          def build_outbound(uri):
+              try:
+                  if uri.startswith("vmess://"):
+                      return parse_vmess(uri)
+                  if uri.startswith("vless://"):
+                      return parse_uri_generic(uri, "vless")
+                  if uri.startswith("trojan://"):
+                      return parse_uri_generic(uri, "trojan")
+                  if uri.startswith("ss://"):
+                      return parse_ss(uri)
+              except Exception:
+                  return None, None
+              return None, None
+
+          def test_via_proxy(port, timeout=6):
+              proxy_handler = urllib.request.ProxyHandler({
+                  "http": f"http://127.0.0.1:{port}", "https": f"http://127.0.0.1:{port}"
+              })
+              opener = urllib.request.build_opener(proxy_handler)
+              for url in TEST_URLS:
+                  try:
+                      req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                      opener.open(req, timeout=timeout)
+                      return True
+                  except urllib.error.HTTPError as e:
+                      if e.code in (200, 204, 400, 401, 403, 404):
+                          return True
+                  except Exception:
+                      continue
+              return False
+
+          def test_config(uri):
+              outbound, name = build_outbound(uri)
+              if not outbound:
+                  return False
+              port = get_port()
+              cfg = {
+                  "inbounds": [{"port": port, "listen": "127.0.0.1", "protocol": "http", "settings": {}}],
+                  "outbounds": [outbound],
+              }
+              cfg_path = f"/tmp/xr_{port}.json"
+              with open(cfg_path, "w") as f:
+                  json.dump(cfg, f)
+
+              proc = None
+              try:
+                  proc = subprocess.Popen(
+                      ["xray", "run", "-c", cfg_path],
+                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                  )
+                  time.sleep(1.5)
+                  ok = test_via_proxy(port)
+              except Exception:
+                  ok = False
+              finally:
+                  if proc:
+                      proc.kill()
+                      proc.wait(timeout=5)
+                  if os.path.exists(cfg_path):
+                      os.remove(cfg_path)
+                  release_port(port)
+              return ok
+
+          def tag_line(line):
+              if line.startswith("vmess://"):
+                  try:
+                      raw = base64.b64decode(b64pad(line[len("vmess://"):])).decode("utf-8", "ignore")
+                      d = json.loads(raw)
+                      d["ps"] = TAG + d.get("ps", "")
+                      enc = base64.b64encode(json.dumps(d).encode()).decode()
+                      return "vmess://" + enc
+                  except Exception:
+                      return line
+              else:
+                  if "#" in line:
+                      base, frag = line.split("#", 1)
+                      name = urllib.parse.unquote(frag)
+                      return base + "#" + urllib.parse.quote(TAG + name)
+                  else:
+                      return line + "#" + urllib.parse.quote(TAG.strip())
+
+          def process_file(path):
+              if not os.path.exists(path):
+                  return
+              with open(path) as f:
+                  lines = [l.strip() for l in f if l.strip()]
+
+              results = [None] * len(lines)
+              with ThreadPoolExecutor(max_workers=8) as ex:
+                  futures = {ex.submit(test_config, line): i for i, line in enumerate(lines)}
+                  for fut in futures:
+                      i = futures[fut]
+                      try:
+                          results[i] = fut.result()
+                      except Exception:
+                          results[i] = False
+
+              new_lines = []
+              ok_count = 0
+              for line, ok in zip(lines, results):
+                  if ok:
+                      new_lines.append(tag_line(line))
+                      ok_count += 1
+                  else:
+                      new_lines.append(line)
+
+              with open(path, "w") as f:
+                  f.write("\n".join(new_lines) + "\n")
+
+              print(f"{path}: {ok_count}/{len(lines)} تونستن به جمینی وصل بشن")
+
+          for fname in FILES:
+              process_file(fname)
+          PYEOF
+
+          python3 test_gemini.py
 
       - name: Commit and push
         run: |
@@ -169,5 +408,5 @@ jobs:
             exit 0
           fi
 
-          git commit -m "Update Netherlands, Turkey and Italy"
+          git commit -m "Update Netherlands, Turkey and Italy + tag Gemini-reachable configs"
           git push
