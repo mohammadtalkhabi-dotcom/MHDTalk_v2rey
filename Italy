@@ -1,16 +1,17 @@
 ss://MjAyMi1ibGFrZTMtYWVzLTI1Ni1nY206Q1ZGaTNxNmVCZWxSc25KWFhpb3pQTXBSbE5PRDJiVzhLOTNDZmtjZnY0Zz06QVlUQ2cySmFueURla09KN241cFRPRllIRk5adko4d01yaHMzNzdzOC84dz0@138.124.90.40:46194?#Italy 1
 ss://MjAyMi1ibGFrZTMtYWVzLTI1Ni1nY206UWJRamwzclRML2t0ckoyVVZGTDhaQkYzQlAxdElReU5jdC9yNEFDWUt5RT06OTQ2OVgxRmY0Y1RwalpNMGMxS0lpMlRTd2k2WDB4UGRNalpBVXNxS2FLdz0@138.124.90.40:54052?#Italy 2
 ss://MjAyMi1ibGFrZTMtYWVzLTI1Ni1nY206ZVJreUROSEVKT0RWZlBxMFJEL25FTlc4RkRTWUdabmdtM25SU08yYVBxST06c3o5QXVTdFVrUG9ibDFZbHl1cVZoRXg3SzJCMUlWN0swK2JaK212UlZIMD0@138.124.90.40:40374?#Italy 3
-vless://4d4bfd21-88fc-4de7-87bd-c2ddaedc4078@34.154.47.33:443?encryption=none&fp=&pbk=jGfJxbIyf2aLRFQyT9NsJBu1CzJmrAa2sF19GNw46z8&security=reality&sid=29615707650b941d&sni=www.cloudflare.com&type=tcp#Italy 4
-vless://61393afa-169b-42a9-98c7-7e032183add6@tuntey.poefauscw.ir:8080?security=&encryption=mlkem768x25519plus.native.0rtt.N1oxcKhA4M6Jl_2oVZAXib6-LS2QMRutMviT6-9AKmU&host=account.xiaomi.com&headerType=http&type=tcp#Italy 5
-vless://634394fa-957c-4e1b-ba31-ec2bc417c356@138.124.90.40:35872?encryption=none&security=reality&sni=www.icloud.com&fp=chrome&pbk=PnvtzlkQxMBo2VR7EB4BxqE3EgL6c_92Z8MYijqN2hI&sid=ee740b4fd675&spx=/&type=xhttp&path=/&mode=auto&extra={"xPaddingBytes":"100-1000"}#Italy 6
-vless://8fe8109d-6097-4f4b-9957-92d9b9b93b4c@itl.mobileemdad.top:443?security=reality&encryption=none&pbk=PjR-SM4fOm2fY4mTqWoqZDRyxontvpailM0gBqUxlUQ&headerType=none&fp=chrome&type=tcp&sni=play-apps-features.googleusercontent.com&sid=f88610dd#Italy 7
-vless://9f0285ee-20ca-4953-bcdb-86a920652923@204.216.216.23:10086?encryption=none&security=none&type=tcp#%C2%AE%EF%B8%8F%20Italy%208
-vless://9f0285ee-20ca-4953-bcdb-86a920652923@204.216.216.23:10086?security=&alpn=v2rayNplus--v2rayNplus--v2rayNplus--v2rayNplus--v2rayNplus--v2rayNplus--v2rayNplus--v2rayNplus&encryption=none&host=v2rayNplus--v2rayNplus--v2rayNplus--&headerType=none&type=tcp&sni=/?v2rayNplus#%C2%AE%EF%B8%8F%20Italy%209
-vless://9f0285ee-20ca-4953-bcdb-86a920652923@204.216.216.23:10086?security=none&encryption=none&headerType=none&type=tcp#%C2%AE%EF%B8%8F%20Italy%2010
+vless://0de1047d-fadd-4075-a08e-2223c5dadd0a@vbbb.chainmark.ir:11111?encryption=none&type=tcp&security=reality&sni=primevideo.com&fp=chrome&pbk=ADrXq9ZfvfkMCAjtS3G6bskFCuztVbMeIux2po4gGjM&sid=d1967fc42889dd66&allowInsecure=1#Italy 4
+vless://5934cc4f-c17b-41c0-9280-c75eb222f4b7@node-nl.usel.pro:443?security=reality&encryption=none&pbk=BTCZ0hMhV10H818mbm54EQdU0s3qQXMtY4Hl67dFA18&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=vu.nl#%C2%AE%EF%B8%8F%20Italy%205
+vless://61393afa-169b-42a9-98c7-7e032183add6@tuntey.poefauscw.ir:8080?security=&encryption=mlkem768x25519plus.native.0rtt.N1oxcKhA4M6Jl_2oVZAXib6-LS2QMRutMviT6-9AKmU&host=account.xiaomi.com&headerType=http&type=tcp#Italy 6
+vless://634394fa-957c-4e1b-ba31-ec2bc417c356@138.124.90.40:35872?encryption=none&security=reality&sni=www.icloud.com&fp=chrome&pbk=PnvtzlkQxMBo2VR7EB4BxqE3EgL6c_92Z8MYijqN2hI&sid=ee740b4fd675&spx=/&type=xhttp&path=/&mode=auto&extra={"xPaddingBytes":"100-1000"}#Italy 7
+vless://8fe8109d-6097-4f4b-9957-92d9b9b93b4c@itl.mobileemdad.top:443?security=reality&encryption=none&pbk=PjR-SM4fOm2fY4mTqWoqZDRyxontvpailM0gBqUxlUQ&headerType=none&fp=chrome&type=tcp&sni=play-apps-features.googleusercontent.com&sid=f88610dd#Italy 8
+vless://9f0285ee-20ca-4953-bcdb-86a920652923@204.216.216.23:10086?encryption=none&security=none&type=tcp#%C2%AE%EF%B8%8F%20Italy%209
+vless://9f0285ee-20ca-4953-bcdb-86a920652923@204.216.216.23:10086?security=&alpn=v2rayNplus--v2rayNplus--v2rayNplus--v2rayNplus--v2rayNplus--v2rayNplus--v2rayNplus--v2rayNplus&encryption=none&host=v2rayNplus--v2rayNplus--v2rayNplus--&headerType=none&type=tcp&sni=/?v2rayNplus#%C2%AE%EF%B8%8F%20Italy%2010
 vless://9f0285ee-20ca-4953-bcdb-86a920652923@204.216.216.23:10086?security=none&encryption=none&headerType=none&type=tcp#%C2%AE%EF%B8%8F%20Italy%2011
 vless://9f0285ee-20ca-4953-bcdb-86a920652923@204.216.216.23:10086?security=none&encryption=none&headerType=none&type=tcp#%C2%AE%EF%B8%8F%20Italy%2012
-vless://a8f5e04b-be34-4b84-9359-684ad9c417b0@ai.trstcore.pro:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=ai.trstcore.pro&fp=chrome&pbk=9WRqVZFCPMEG_BOcWGhyxAzZh7Khr32Bwk_Chn1qe00&sid=68edd85a6549e28a&type=tcp&headerType=none#Italy 13
-vless://b585dc5e-55bf-4a8b-913a-27c9ccac05c3@158.180.231.216:443/?type=ws&encryption=none&flow=&host=bab-6.site&path=/vws/&security=tls&sni=bab-6.site&fp=chrome&packetEncoding=xudp#Italy 14
-ss://YWVzLTI1Ni1nY206ZDFmYTJmNGI5OGEzOGJjOA@194.87.47.204:10901#Italy 15
-vless://9f0285ee-20ca-4953-bcdb-86a920652923@204.216.216.23:10086?encryption=none&security=none&type=tcp#%C2%AE%EF%B8%8F%20Italy%2016
+vless://9f0285ee-20ca-4953-bcdb-86a920652923@204.216.216.23:10086?security=none&encryption=none&headerType=none&type=tcp#%C2%AE%EF%B8%8F%20Italy%2013
+vless://a8f5e04b-be34-4b84-9359-684ad9c417b0@ai.trstcore.pro:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=ai.trstcore.pro&fp=chrome&pbk=9WRqVZFCPMEG_BOcWGhyxAzZh7Khr32Bwk_Chn1qe00&sid=68edd85a6549e28a&type=tcp&headerType=none#Italy 14
+vless://b585dc5e-55bf-4a8b-913a-27c9ccac05c3@158.180.231.216:443/?type=ws&encryption=none&flow=&host=bab-6.site&path=/vws/&security=tls&sni=bab-6.site&fp=chrome&packetEncoding=xudp#Italy 15
+ss://YWVzLTI1Ni1nY206ZDFmYTJmNGI5OGEzOGJjOA@194.87.47.204:10901#Italy 16
+vless://9f0285ee-20ca-4953-bcdb-86a920652923@204.216.216.23:10086?encryption=none&security=none&type=tcp#%C2%AE%EF%B8%8F%20Italy%2017
